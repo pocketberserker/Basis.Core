@@ -18,20 +18,15 @@ module Option =
   | Some v -> v
   | None -> defaultLazyValue |> Lazy.value
 
-  open ComputationExpr
-
   type OptionBuilder internal () =
-    member this.Zero() = None, Continue
-    member this.Return(x) = Some x, Break
-    member this.ReturnFrom(x: _ option) = x, Break
-    member this.Bind(x, f: _ -> _ option * FlowControl) = (Option.bind (f >> fst) x, Continue)
-    member this.Using(x: #IDisposable, f: #IDisposable -> _ option * FlowControl) =
+    member this.Zero() = fun k -> k None
+    member this.Return(x) = fun _ -> Some x
+    member this.ReturnFrom(x: _ option) = fun _ -> x
+    member this.Bind(x, f) = x |> Option.map f |> getOrElse this.Zero
+    member this.Using(x: #IDisposable, f) =
       try f x
       finally match box x with null -> () | notNull -> x.Dispose()
-    member this.Combine((x: _ option, cont), rest: unit -> _ option * FlowControl) =
-      match cont with
-      | Break -> x, Break
-      | Continue -> if x.IsSome then x, Break else rest ()
+    member this.Combine(f, rest) = fun k -> f (fun _ -> rest () k)
     member this.TryWith(f, h) = try f () with e -> h e
     member this.TryFinally(f, g) = try f () finally g ()
     member this.While(guard, f) =
@@ -41,8 +36,8 @@ module Option =
       this.Using(
         xs.GetEnumerator(),
         fun itor -> this.While(itor.MoveNext, fun () -> f itor.Current))
-    member this.Delay(f: unit -> _ option * FlowControl) = f
-    member this.Run(f) = f () |> fst
+    member this.Delay(f) = f
+    member this.Run(f) = f () id
 
 [<AutoOpen>]
 module OptionDefaultOps =
