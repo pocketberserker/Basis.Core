@@ -97,27 +97,25 @@ module Result =
   [<CompiledName "MapFailure">]
   let mapFailure f (result: Result<_, _>) = result.MapFailure(f)
 
-  open ComputationExpr
-
   type ResultBuilder internal () =
-    member this.Return(x) = (Success x), Break
-    member this.ReturnFrom(x: Result<_, _>) = x, Break
-    member this.Bind(x, f: _ -> Result<_,_> * FlowControl) = (bind (f >> fst) x, Continue)
-    member this.Using(x: #IDisposable, f: #IDisposable -> Result<_,_> * FlowControl) =
+    member this.Return(x) = fun _ -> Success x
+    member this.ReturnFrom(x: Result<_, _>) = fun _ -> x
+    member this.Bind(x, f: _ -> (Result<_,_> -> _) -> _) =
+      match x with
+      | Success x -> f x
+      | Failure e -> fun k -> k <| Failure e
+    member this.Using(x: #IDisposable, f) =
       try f x
       finally match box x with null -> () | notNull -> x.Dispose()
-    member this.Combine((x: Result<_, _>, cont), rest: unit -> Result<_,_> * FlowControl) =
-      match cont with
-      | Break -> x, Break
-      | Continue -> if isSuccess x then x, Break else rest ()
+    member this.Combine(f, rest) = fun k -> f (fun _ -> rest () k)
     member this.TryWith(f, h) = try (f ()) with e -> h e
     member this.TryFinally(f, g) = try (f ()) finally g ()
-    member this.Delay(f: unit -> (Result<_, _> * FlowControl)) = f
-    member this.Run(f) = f () |> fst
+    member this.Delay(f) = f
+    member this.Run(f) = f () id
 
   type ResultWithZeroBuilder<'TZero> internal (zeroValue: 'TZero) =
     inherit ResultBuilder()
-    member this.Zero () = Failure zeroValue, Continue
+    member this.Zero () = fun k -> k <| Failure zeroValue
     member this.While(guard, f) =
       if not (guard ()) then this.Zero()
       else let x = f () in this.Combine(x, fun () -> this.While(guard, f))
@@ -127,24 +125,24 @@ module Result =
         fun itor -> this.While(itor.MoveNext, fun () -> f itor.Current))
 
   type FailureBuilder internal () =
-    member this.Return(x) = Failure x, Break
-    member this.ReturnFrom(x: Result<_, _>) = x, Break
-    member this.Bind(x, f: _ -> Result<_,_> * FlowControl) = (bindFailure (f >> fst) x, Continue)
-    member this.Using(x: #IDisposable, f: #IDisposable -> Result<_,_> * FlowControl) =
+    member this.Return(x) = fun _ -> Failure x
+    member this.ReturnFrom(x: Result<_, _>) = fun _ -> x
+    member this.Bind(x, f) =
+      match x with
+      | Failure e -> f e
+      | Success x -> fun k -> k <| Success x
+    member this.Using(x: #IDisposable, f) =
       try f x
       finally match box x with null -> () | notNull -> x.Dispose()
-    member this.Combine((x: Result<_, _>, cont), rest) =
-      match cont with
-      | Break -> x, Break
-      | Continue -> if isFailure x then x, Break else rest ()
+    member this.Combine(f, rest) = fun k -> f (fun _ -> rest () k)
     member this.TryWith(f, h) = try (f ()) with e -> h e
     member this.TryFinally(f, g) = try (f ()) finally g ()
-    member this.Delay(f: unit -> Result<_, _> * FlowControl) = f
-    member this.Run(f) = f () |> fst
+    member this.Delay(f) = f
+    member this.Run(f) = f () id
 
   type FailureWithZeroBuilder<'TZero> internal (zeroValue: 'TZero) =
     inherit FailureBuilder()
-    member this.Zero () = Success zeroValue, Continue
+    member this.Zero () = fun k -> k <| Success zeroValue
     member this.While(guard, f) =
       if not (guard ()) then this.Zero()
       else let x = f () in this.Combine(x, fun () -> this.While(guard, f))
